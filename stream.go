@@ -32,29 +32,53 @@ type stream struct {
 	id     streamID
 	sender sender
 	recv   chan *streamMessage
+	mc     chan *streamMessage
 
-	closeOnce sync.Once
 	recvErr   error
+	recvClose chan interface{}
+	closeOnce sync.Once
 }
 
-func newStream(id streamID, send sender) *stream {
-	return &stream{
-		id:     id,
-		sender: send,
-		recv:   make(chan *streamMessage, 1),
+func newStream(ctx context.Context, id streamID, send sender) *stream {
+	s := &stream{
+		id:        id,
+		sender:    send,
+		recv:      make(chan *streamMessage, 1),
+		mc:        make(chan *streamMessage, 1),
+		recvClose: make(chan interface{}),
 	}
+
+	go func(ctx context.Context) {
+		defer close(s.recv)
+		for {
+			select {
+			case <-s.recvClose:
+				return
+			default:
+			}
+			select {
+			case <-s.recvClose:
+				return
+			case msg := <-s.mc:
+				s.recv <- msg
+			case <-ctx.Done():
+				return
+			}
+		}
+	}(ctx)
+
+	return s
 }
 
 func (s *stream) closeWithError(err error) error {
 	s.closeOnce.Do(func() {
 		if s.recv != nil {
-			close(s.recv)
 			if err != nil {
 				s.recvErr = err
 			} else {
 				s.recvErr = ErrClosed
 			}
-
+			close(s.recvClose)
 		}
 	})
 	return nil
@@ -65,11 +89,8 @@ func (s *stream) send(mt messageType, flags uint8, b []byte) error {
 }
 
 func (s *stream) receive(ctx context.Context, msg *streamMessage) error {
-	if s.recvErr != nil {
-		return s.recvErr
-	}
 	select {
-	case s.recv <- msg:
+	case s.mc <- msg:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()

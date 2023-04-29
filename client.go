@@ -353,7 +353,7 @@ func (c *Client) createStream(flags uint8, b []byte) (*stream, error) {
 	}
 
 	// Stream ID should be allocated at same time
-	s := newStream(c.nextStreamID, c)
+	s := newStream(c.ctx, c.nextStreamID, c)
 	c.streams[s.id] = s
 	c.nextStreamID = c.nextStreamID + 2
 
