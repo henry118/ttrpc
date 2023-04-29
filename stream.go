@@ -33,28 +33,36 @@ type stream struct {
 	sender sender
 	recv   chan *streamMessage
 
-	closeOnce sync.Once
 	recvErr   error
+	recvClose chan interface{}
+	closeOnce sync.Once
+	wg        sync.WaitGroup
 }
 
 func newStream(id streamID, send sender) *stream {
 	return &stream{
-		id:     id,
-		sender: send,
-		recv:   make(chan *streamMessage, 1),
+		id:        id,
+		sender:    send,
+		recv:      make(chan *streamMessage, 1),
+		recvClose: make(chan interface{}),
 	}
 }
 
 func (s *stream) closeWithError(err error) error {
 	s.closeOnce.Do(func() {
 		if s.recv != nil {
-			close(s.recv)
 			if err != nil {
 				s.recvErr = err
 			} else {
 				s.recvErr = ErrClosed
 			}
-
+			close(s.recvClose)
+			go func() {
+				for range s.recv {
+				}
+			}()
+			s.wg.Wait()
+			close(s.recv)
 		}
 	})
 	return nil
@@ -65,10 +73,18 @@ func (s *stream) send(mt messageType, flags uint8, b []byte) error {
 }
 
 func (s *stream) receive(ctx context.Context, msg *streamMessage) error {
-	if s.recvErr != nil {
-		return s.recvErr
-	}
+	s.wg.Add(1)
+	defer s.wg.Done()
+
 	select {
+	case <-s.recvClose:
+		return s.recvErr
+	default:
+	}
+
+	select {
+	case <-s.recvClose:
+		return s.recvErr
 	case s.recv <- msg:
 		return nil
 	case <-ctx.Done():
